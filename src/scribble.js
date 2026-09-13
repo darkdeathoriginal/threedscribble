@@ -36,6 +36,7 @@ export function generateScribble({ data, width, height }, options = {}) {
   }
   const positions = [];
   const colors = [];
+  const strokeOffsets = [0];
   const bounds = Math.max(width, height);
   const scale = 8 / bounds;
   const cutoff = settings.threshold / 100;
@@ -92,7 +93,7 @@ export function generateScribble({ data, width, height }, options = {}) {
       previousColor = color;
       added = true;
     }
-    if (added) strokes++;
+    if (added) { strokes++; strokeOffsets.push(positions.length / 6); }
   };
   for (let layer = 0; layer < 3; layer++) {
     for (let y = spacing / 2; y < height; y += spacing) {
@@ -134,8 +135,9 @@ export function generateScribble({ data, width, height }, options = {}) {
           p = next; alpha = nextAlpha;
         }
         strokes++;
+        strokeOffsets.push(positions.length / 6);
       }
     }
   }
-  return { positions: new Float32Array(positions), colors: new Float32Array(colors), strokes, segments: positions.length / 6, width, height };
+  return { positions: new Float32Array(positions), colors: new Float32Array(colors), strokeOffsets: new Uint32Array(strokeOffsets), strokes, segments: positions.length / 6, width, height };
 }

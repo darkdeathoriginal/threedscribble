@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { revealLayout, revealWeights, shortestTurn } from '../src/collection.js';
+import { revealLayout, revealPair, sampleTour, shortestTurn } from '../src/collection.js';
 import { getVideoFormat, recordCanvas } from '../src/recording.js';
 
 test('every source has a distinct reveal direction in the same shared volume', () => {
@@ -8,11 +8,9 @@ test('every source has a distinct reveal direction in the same shared volume', (
     const layout = revealLayout(count);
     assert.equal(new Set(layout.map(view => view.imageIndex)).size, count);
     for (const view of layout) {
-      const weights = revealWeights(layout, view.angle);
-      const best = weights.indexOf(Math.max(...weights));
-      assert.equal(layout[best].imageIndex, view.imageIndex);
-      assert.ok(weights[best] > 0.999);
-      assert.ok(Math.abs(weights.reduce((a, b) => a + b, 0) - 1) < 1e-10);
+      const pair = revealPair(layout, view.angle);
+      assert.equal(layout[pair.mix < 0.5 ? pair.from : pair.to].imageIndex, view.imageIndex);
+      assert.ok(pair.mix < 0.0001 || pair.mix > 0.9999);
     }
   }
 });
@@ -21,12 +19,36 @@ test('reveal transitions stay continuous across a full turn, including the seam'
   const layout = revealLayout(4);
   assert.deepEqual(revealLayout(0), []);
   for (const angle of [0, 0.3, Math.PI / 4, Math.PI, Math.PI * 2]) {
-    const left = revealWeights(layout, angle - 0.0001);
-    const right = revealWeights(layout, angle + 0.0001);
+    const point = angle => {
+      const pair = revealPair(layout, angle);
+      return [Math.cos(layout[pair.from].angle) * (1 - pair.mix) + Math.cos(layout[pair.to].angle) * pair.mix,
+        Math.sin(layout[pair.from].angle) * (1 - pair.mix) + Math.sin(layout[pair.to].angle) * pair.mix];
+    };
+    const left = point(angle - 0.0001), right = point(angle + 0.0001);
     left.forEach((value, index) => assert.ok(Math.abs(value - right[index]) < 0.002));
   }
   assert.ok(Math.abs(shortestTurn(350 * Math.PI / 180, 10 * Math.PI / 180) - 20 * Math.PI / 180) < 1e-10);
   assert.deepEqual(revealLayout(2).map(view => view.imageIndex), [0, 1, 0, 1]);
+});
+
+test('cinematic tour frames every image, zooms into detail, and pulls back before turning', () => {
+  for (const count of [1, 4, 7]) {
+    for (let i = 0; i < count; i++) {
+      const full = sampleTour(i / count, count);
+      const close = sampleTour((i + 0.4) / count, count);
+      const exit = sampleTour((i + 0.74) / count, count);
+      assert.equal(full.zoom, 1);
+      assert.ok(close.zoom > 2.8);
+      assert.ok(close.focusY > 0.7);
+      assert.ok(Math.abs(exit.zoom - 1) < 1e-8);
+      assert.ok(Math.abs(full.angle - i / count * Math.PI * 2) < 1e-8);
+    }
+    const end = sampleTour(1, count);
+    assert.equal(end.zoom, 1);
+    assert.equal(end.focusY, 0);
+    assert.ok(Math.abs(end.angle - Math.PI * 2) < 1e-8);
+  }
+  assert.equal(sampleTour(0.4, 4, 'orbit').zoom, 1);
 });
 
 test('select an actual supported video container and handle unsupported browsers', () => {

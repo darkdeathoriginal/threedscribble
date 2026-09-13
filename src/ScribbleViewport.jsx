@@ -1,7 +1,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { revealLayout, revealWeights, shortestTurn } from './collection.js';
+import { revealLayout, revealPair, sampleTour, shortestTurn, smooth } from './collection.js';
 import { recordCanvas } from './recording.js';
 
 const disposeDrawing = group => group?.traverse(object => {
@@ -24,6 +24,15 @@ function turnCamera(state, position, target = [0, 0, 0], zoom = 1) {
     targetFrom: state.controls.target.clone(), targetTo,
     zoomFrom: state.camera.zoom, zoomTo: zoom,
   };
+}
+
+function applyTour(state, progress, motion = 'cinematic') {
+  const pose = sampleTour(progress, state.revealViews?.length || 1, motion);
+  state.controls.target.set(0, pose.focusY, 0);
+  state.camera.position.set(Math.sin(pose.angle) * 16, pose.focusY + pose.elevation, Math.cos(pose.angle) * 16);
+  state.camera.zoom = pose.zoom;
+  state.camera.updateProjectionMatrix();
+  state.camera.lookAt(state.controls.target);
 }
 
 export const VIEWS = [
@@ -56,6 +65,8 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
     zoom(factor) {
       const state = api.current;
       if (!state) return;
+      state.tour = null;
+      callbacks.current.onInteract();
       state.transition = null;
       state.camera.zoom = THREE.MathUtils.clamp(state.camera.zoom * factor, 0.35, 12);
       state.camera.updateProjectionMatrix();
@@ -70,13 +81,14 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
         else reject(new Error('Could not encode the drawing.'));
       }, 'image/png'));
     },
-    recordVideo({ duration, onProgress }) {
+    recordVideo({ duration, onProgress, motion = 'cinematic' }) {
       const state = api.current;
       if (!state || state.recording) throw new Error('The drawing is not ready for recording.');
       const { camera, controls, renderer, scene } = state;
       state.transition = null;
       controls.update(0);
       const position = camera.position.clone();
+      const zoom = camera.zoom;
       const target = controls.target.clone();
       const offset = position.clone().sub(target);
       const axis = new THREE.Vector3(0, 1, 0);
@@ -88,6 +100,8 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
       const context = capture.getContext('2d');
       const restore = () => {
         camera.position.copy(position);
+        camera.zoom = zoom;
+        camera.updateProjectionMatrix();
         controls.target.copy(target);
         camera.lookAt(target);
         controls.enabled = true;
@@ -100,8 +114,11 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
         const job = recordCanvas(capture, {
           duration, onProgress,
           onFrame(progress) {
-            camera.position.copy(offset).applyAxisAngle(axis, progress * Math.PI * 2).add(target);
-            camera.lookAt(target);
+            if (motion === 'cinematic') applyTour(state, progress, motion);
+            else {
+              camera.position.copy(offset).applyAxisAngle(axis, progress * Math.PI * 2).add(target);
+              camera.lookAt(target);
+            }
             state.updateReveal?.();
             renderer.render(scene, camera);
             context.drawImage(renderer.domElement, 0, 0, capture.width, capture.height);
@@ -144,13 +161,25 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
       if (!state.revealViews?.length) return;
       camera.getWorldDirection(direction);
       const angle = Math.atan2(-direction.x, -direction.z);
-      const weights = revealWeights(state.revealViews, angle);
-      let best = 0;
-      state.revealViews.forEach((view, index) => {
-        view.uniform.value = weights[index];
-        view.lines.renderOrder = weights[index] > 0.5 ? 2 : 1;
-        if (weights[index] > weights[best]) best = index;
-      });
+      const pair = revealPair(state.revealViews, angle);
+      if (state.sharedGeometry) {
+        if (state.sharedPair !== pair.from) {
+          const a = state.revealViews[pair.from], b = state.revealViews[pair.to];
+          for (const [name, source] of [['position', a.position], ['color', a.color], ['nextPosition', b.position], ['nextColor', b.color]]) {
+            let attribute = state.sharedGeometry.getAttribute(name);
+            if (!attribute) {
+              attribute = new THREE.BufferAttribute(source.array.slice(), source.itemSize).setUsage(THREE.DynamicDrawUsage);
+              state.sharedGeometry.setAttribute(name, attribute);
+            } else {
+              attribute.array.set(source.array);
+              attribute.needsUpdate = true;
+            }
+          }
+          state.sharedPair = pair.from;
+        }
+        state.morph.value = pair.mix;
+      }
+      const best = pair.mix < 0.5 ? pair.from : pair.to;
       const id = state.revealViews[best].id;
       if (state.currentReveal !== id) {
         state.currentReveal = id;
@@ -208,6 +237,18 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
         camera.updateProjectionMatrix();
         camera.lookAt(controls.target);
         if (t === 1) state.transition = null;
+      } else if (state.tour) {
+        const elapsed = (now - state.tour.started) / 1000;
+        applyTour(state, (elapsed / state.tour.duration) % 1);
+        // Ease into the tour from the user's current framing.
+        if (elapsed < 1) {
+          const t = smooth(elapsed);
+          camera.position.lerpVectors(state.tour.position, camera.position.clone(), t);
+          controls.target.lerpVectors(state.tour.target, controls.target.clone(), t);
+          camera.zoom = THREE.MathUtils.lerp(state.tour.zoom, camera.zoom, t);
+          camera.updateProjectionMatrix();
+          camera.lookAt(controls.target);
+        }
       } else controls.update(delta);
       if (!state.recording) {
         state.updateReveal();
@@ -242,6 +283,36 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
     state.lines = new THREE.Group();
     state.revealViews = [];
     state.currentReveal = null;
+    state.sharedGeometry = null;
+    state.sharedPair = null;
+    if (scribble.shared) {
+      // One LineSegments object. Corresponding vertices move and recolor;
+      // there are no independent drawings to cross-fade or hide.
+      const geometry = new THREE.BufferGeometry();
+      const morph = { value: 0 };
+      layout.forEach(view => {
+        const target = scribble.shared.targets[view.imageIndex];
+        const position = new THREE.BufferAttribute(target.positions.slice(), 3);
+        position.applyMatrix4(new THREE.Matrix4().makeRotationY(view.angle));
+        state.revealViews.push({ ...view, id: target.id, position, color: new THREE.BufferAttribute(target.colors, 4) });
+      });
+      const material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false });
+      material.onBeforeCompile = shader => {
+        shader.uniforms.uMorph = morph;
+        shader.vertexShader = `uniform float uMorph;\nattribute vec3 nextPosition;\nattribute vec4 nextColor;\n${shader.vertexShader}`
+          .replace('#include <begin_vertex>', 'vec3 transformed = mix(position, nextPosition, uMorph);')
+          .replace('#include <color_vertex>', 'vColor = mix(color, nextColor, uMorph);');
+      };
+      material.customProgramCacheKey = () => 'shared-strand-morph-v1';
+      const lines = new THREE.LineSegments(geometry, material);
+      lines.frustumCulled = false;
+      state.lines.add(lines);
+      state.sharedGeometry = geometry;
+      state.morph = morph;
+      state.scene.add(state.lines);
+      state.updateReveal();
+      return;
+    }
     const geometries = items.map(item => {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(item.positions, 3));
@@ -253,19 +324,6 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
       const item = items[view.imageIndex];
       const geometry = geometries[view.imageIndex];
       const material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false });
-      const uniform = { value: 1 };
-      material.onBeforeCompile = shader => {
-        shader.uniforms.uReveal = uniform;
-        shader.fragmentShader = `uniform float uReveal;\n${shader.fragmentShader}`.replace(
-          '#include <color_fragment>',
-          `#include <color_fragment>
-          // Leave loose strands from the other directions woven through the
-          // volume, while the facing image supplies the readable detail.
-          float loose = 1.0 - step(0.999, vColor.a);
-          diffuseColor.a *= mix(0.035 * loose, 1.0, uReveal);`,
-        );
-      };
-      material.customProgramCacheKey = () => 'angle-reveal-v1';
       const lines = new THREE.LineSegments(geometry, material);
       lines.name = item.name || 'Drawing';
       lines.rotation.y = view.angle;
@@ -273,15 +331,21 @@ const ScribbleViewport = forwardRef(function ScribbleViewport({ scribble, autoRo
       // No offsets or tiles: all image strands intersect in this volume.
       lines.position.set(0, 0, 0);
       state.lines.add(lines);
-      state.revealViews.push({ ...view, id: item.id, lines, uniform });
+      state.revealViews.push({ ...view, id: item.id });
     });
     state.scene.add(state.lines);
     state.updateReveal();
   }, [scribble]);
 
   useEffect(() => {
-    if (api.current) api.current.controls.autoRotate = autoRotate;
-  }, [autoRotate]);
+    const state = api.current;
+    if (!state) return;
+    state.controls.autoRotate = false;
+    state.tour = autoRotate ? {
+      started: performance.now(), duration: Math.max(1, state.revealViews?.length || 1) * 8,
+      position: state.camera.position.clone(), target: state.controls.target.clone(), zoom: state.camera.zoom,
+    } : null;
+  }, [autoRotate, scribble]);
 
   return <div className="viewport" ref={mountRef} />;
 });
