@@ -1,600 +1,242 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Box,
-  Camera,
-  Download,
-  ImagePlus,
-  Layers,
-  Palette,
-  RefreshCcw,
-  Sparkles,
-  Waves,
-} from 'lucide-react';
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { ArrowDownToLine, Box, Check, ChevronLeft, ChevronRight, ImagePlus, Maximize, Minus, Pause, Play, Plus, RotateCcw, SlidersHorizontal, Waves, X } from 'lucide-react';
+import ScribbleViewport, { VIEWS } from './ScribbleViewport.jsx';
+import { DEFAULT_SETTINGS } from './scribble.js';
+import { makeDemoImage } from './demo.js';
+import VideoExportDialog from './VideoExportDialog.jsx';
 
-const MAX_IMAGE_SIZE = 220;
-const EMPTY_IMAGE_NAME = 'Built-in demo portrait';
-
-const makeDemoImage = () => {
-  const canvas = document.createElement('canvas');
-  canvas.width = 520;
-  canvas.height = 520;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-  const sky = ctx.createLinearGradient(0, 0, 520, 520);
-  sky.addColorStop(0, '#fffaf0');
-  sky.addColorStop(1, '#f3eadb');
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, 520, 520);
-
-  ctx.fillStyle = '#1d2324';
-  ctx.beginPath();
-  ctx.ellipse(260, 232, 116, 124, 0.04, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#f1c7b3';
-  ctx.beginPath();
-  ctx.ellipse(260, 270, 82, 106, 0.02, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#2c3434';
-  ctx.beginPath();
-  ctx.ellipse(224, 258, 10, 14, 0.2, 0, Math.PI * 2);
-  ctx.ellipse(298, 258, 10, 14, -0.2, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = '#6f3c43';
-  ctx.lineWidth = 7;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(224, 320);
-  ctx.bezierCurveTo(248, 342, 281, 342, 306, 319);
-  ctx.stroke();
-
-  ctx.strokeStyle = '#c18770';
-  ctx.lineWidth = 5;
-  ctx.globalAlpha = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(258, 272);
-  ctx.bezierCurveTo(246, 296, 248, 306, 264, 308);
-  ctx.stroke();
-
-  ctx.globalAlpha = 0.2;
-  ctx.fillStyle = '#6f3c43';
-  ctx.beginPath();
-  ctx.ellipse(218, 294, 26, 14, -0.2, 0, Math.PI * 2);
-  ctx.ellipse(306, 294, 26, 14, 0.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1;
-
-  return canvas.toDataURL('image/png');
-};
-
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-
-const getLuminance = (data, index) =>
-  (0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2]) / 255;
-
-const calculateEdge = (luma, width, height, x, y) => {
-  const at = (px, py) => luma[clamp(py, 0, height - 1) * width + clamp(px, 0, width - 1)];
-  const gx =
-    -at(x - 1, y - 1) -
-    2 * at(x - 1, y) -
-    at(x - 1, y + 1) +
-    at(x + 1, y - 1) +
-    2 * at(x + 1, y) +
-    at(x + 1, y + 1);
-  const gy =
-    -at(x - 1, y - 1) -
-    2 * at(x, y - 1) -
-    at(x + 1, y - 1) +
-    at(x - 1, y + 1) +
-    2 * at(x, y + 1) +
-    at(x + 1, y + 1);
-
-  return clamp(Math.sqrt(gx * gx + gy * gy), 0, 1);
-};
-
-const calculateGradient = (luma, width, height, x, y) => {
-  const at = (px, py) => luma[clamp(py, 0, height - 1) * width + clamp(px, 0, width - 1)];
-  const gx =
-    -at(x - 1, y - 1) -
-    2 * at(x - 1, y) -
-    at(x - 1, y + 1) +
-    at(x + 1, y - 1) +
-    2 * at(x + 1, y) +
-    at(x + 1, y + 1);
-  const gy =
-    -at(x - 1, y - 1) -
-    2 * at(x, y - 1) -
-    at(x + 1, y - 1) +
-    at(x - 1, y + 1) +
-    2 * at(x, y + 1) +
-    at(x + 1, y + 1);
-
-  return { gx, gy, edge: clamp(Math.sqrt(gx * gx + gy * gy), 0, 1) };
-};
-
-const noise = (x, y, layer = 0) => {
-  const raw = Math.sin(x * 12.9898 + y * 78.233 + layer * 37.719) * 43758.5453;
-  return raw - Math.floor(raw);
-};
-
-const processImage = async (source, settings) =>
-  new Promise((resolve, reject) => {
+function loadPixels(source) {
+  return new Promise((resolve, reject) => {
     const image = new Image();
-    image.crossOrigin = 'anonymous';
     image.onload = () => {
-      const ratio = image.width / image.height;
-      const width = ratio >= 1 ? MAX_IMAGE_SIZE : Math.max(90, Math.round(MAX_IMAGE_SIZE * ratio));
-      const height = ratio >= 1 ? Math.max(90, Math.round(MAX_IMAGE_SIZE / ratio)) : MAX_IMAGE_SIZE;
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(image, 0, 0, width, height);
-
-      const pixels = ctx.getImageData(0, 0, width, height);
-      const luma = new Float32Array(width * height);
-      for (let i = 0; i < pixels.data.length; i += 4) {
-        luma[i / 4] = getLuminance(pixels.data, i);
-      }
-
-      const positions = [];
-      const colors = [];
-      const bounds = Math.max(width, height);
-      const spacing = settings.density;
-      const layerCount = settings.layers;
-      const depthScale = settings.depth / 95;
-      const detailStrength = settings.detail / 100;
-      const colorStrength = settings.color / 100;
-      const inkCutoff = settings.threshold / 150;
-      const gradients = new Array(width * height);
-
-      for (let y = 1; y < height - 1; y += 1) {
-        for (let x = 1; x < width - 1; x += 1) {
-          gradients[y * width + x] = calculateGradient(luma, width, height, x, y);
-        }
-      }
-
-      const pushSegment = (a, b, colorA, colorB) => {
-        positions.push(...a, ...b);
-        colors.push(...colorA, ...colorB);
-      };
-
-      const pointAt = (px, py, brightness, edge, lift = 0) => [
-        ((px - width / 2) / bounds) * 8.2,
-        -((py - height / 2) / bounds) * 8.2,
-        ((1 - brightness) * 1.55 + edge * 1.15 + lift) * depthScale,
-      ];
-
-      const colorAt = (rgbaIndex, ink, edge) => {
-        const tint = [
-          pixels.data[rgbaIndex] / 255,
-          pixels.data[rgbaIndex + 1] / 255,
-          pixels.data[rgbaIndex + 2] / 255,
-        ];
-        const graphite = clamp(0.07 + (1 - ink) * 0.28 - edge * 0.08, 0.03, 0.34);
-        const colorMix = 0.3 + colorStrength * 0.68;
-        const graphiteMix = 0.9 - colorStrength * 0.54;
-        return tint.map((channel) => clamp(channel * colorMix + graphite * graphiteMix, 0.025, 0.92));
-      };
-
-      const makeStroke = (cx, cy, angle, length, brightness, edge, ink, layer, rgbaIndex) => {
-        const bow = (noise(cx, cy, layer + 13) - 0.5) * settings.flow * 0.09;
-        const jitter = (noise(cx + 5, cy - 3, layer) - 0.5) * 0.65;
-        const dx = Math.cos(angle + bow) * length;
-        const dy = Math.sin(angle + bow) * length;
-        const midLift = (noise(cx - 7, cy + 9, layer) - 0.5) * 0.16;
-        const start = pointAt(clamp(cx - dx + jitter, 1, width - 2), clamp(cy - dy, 1, height - 2), brightness, edge);
-        const mid = pointAt(cx + jitter * 0.4, cy, brightness, edge, midLift);
-        const end = pointAt(clamp(cx + dx + jitter, 1, width - 2), clamp(cy + dy, 1, height - 2), brightness, edge);
-        const color = colorAt(rgbaIndex, ink, edge);
-        pushSegment(start, mid, color, color);
-        pushSegment(mid, end, color, color);
-      };
-
-      for (let layer = 0; layer < layerCount; layer += 1) {
-        const hatchAngle = [-0.78, 0.12, 0.78, -0.28, 0.48, -1.05, 1.05][layer % 7];
-        const offset = (layer * 2) % spacing;
-
-        for (let y = 3 + offset; y < height - 3; y += spacing) {
-          for (let x = 3 + ((y + layer) % spacing); x < width - 3; x += spacing) {
-            const sx = clamp(Math.round(x + (noise(x, y, layer) - 0.5) * spacing * 0.75), 1, width - 2);
-            const sy = clamp(Math.round(y + (noise(y, x, layer) - 0.5) * spacing * 0.75), 1, height - 2);
-            const pixelIndex = sy * width + sx;
-            const rgbaIndex = pixelIndex * 4;
-            const brightness = luma[pixelIndex];
-            const gradient = gradients[pixelIndex] || { gx: 0, gy: 0, edge: calculateEdge(luma, width, height, sx, sy) };
-            const edge = gradient.edge;
-            const darkness = 1 - brightness;
-            const ink = clamp(edge * 1.24 + darkness * 0.72, 0, 1);
-            const chance = clamp(ink * (1.1 + detailStrength * 0.55), 0.12, 0.96);
-
-            if (ink < inkCutoff || noise(sx, sy, layer + 31) > chance) {
-              continue;
-            }
-
-            const contourAngle =
-              Math.abs(gradient.gx) + Math.abs(gradient.gy) > 0.001
-                ? Math.atan2(gradient.gy, gradient.gx) + Math.PI / 2
-                : hatchAngle;
-            const angle = edge > 0.22 ? contourAngle : hatchAngle + (noise(sx, sy, layer + 9) - 0.5) * 0.2;
-            const length = clamp(1.6 + edge * 5.5 + darkness * 3.5 - spacing * 0.12, 1.8, 6.8);
-
-            makeStroke(sx, sy, angle, length, brightness, edge, ink, layer, rgbaIndex);
-          }
-        }
-      }
-
-      const detailStep = Math.max(2, Math.round(spacing * (1.1 - detailStrength * 0.45)));
-      const detailCutoff = 0.11 + (1 - detailStrength) * 0.12;
-
-      for (let y = 2; y < height - 2; y += detailStep) {
-        for (let x = 2 + (y % detailStep); x < width - 2; x += detailStep) {
-          const pixelIndex = y * width + x;
-          const gradient = gradients[pixelIndex] || { gx: 0, gy: 0, edge: calculateEdge(luma, width, height, x, y) };
-          const brightness = luma[pixelIndex];
-          const edge = gradient.edge;
-          const darkness = 1 - brightness;
-          const localContrast =
-            Math.abs(luma[pixelIndex] - luma[y * width + clamp(x + 2, 0, width - 1)]) +
-            Math.abs(luma[pixelIndex] - luma[clamp(y + 2, 0, height - 1) * width + x]);
-          const ink = clamp(edge * 1.45 + darkness * 0.46 + localContrast * 0.9, 0, 1);
-
-          if (ink < detailCutoff || noise(x, y, 99) > clamp(ink * detailStrength * 1.3, 0.18, 0.94)) {
-            continue;
-          }
-
-          const rgbaIndex = pixelIndex * 4;
-          const angle = Math.atan2(gradient.gy, gradient.gx) + Math.PI / 2 + (noise(x, y, 111) - 0.5) * 0.32;
-          const length = clamp(1.2 + edge * 4.2 + localContrast * 5.5, 1.1, 4.8);
-          makeStroke(x, y, angle, length, brightness, edge, ink, 20, rgbaIndex);
-        }
-      }
-
-      resolve({
-        positions: new Float32Array(positions),
-        colors: new Float32Array(colors),
-        width,
-        height,
-        segments: positions.length / 6,
-      });
+      try {
+        const scale = Math.min(1, 620 / Math.max(image.width, image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(context.getImageData(0, 0, canvas.width, canvas.height));
+      } catch { reject(new Error('This image could not be processed. Try a smaller JPG, PNG, or WebP.')); }
     };
-    image.onerror = () => reject(new Error('Could not load that image.'));
+    image.onerror = () => reject(new Error('This image could not be opened. Try a JPG, PNG, or WebP.'));
     image.src = source;
   });
+}
 
-function ScribbleViewport({ scribble, settings }) {
-  const mountRef = useRef(null);
-  const sceneRef = useRef(null);
-  const rendererRef = useRef(null);
-  const cameraRef = useRef(null);
-  const controlsRef = useRef(null);
-  const lineRef = useRef(null);
-  const frameRef = useRef(null);
+const CONTROL_FIELDS = [
+  ['density', 'Strand density', 'More overlapping strands for a fuller drawing.'],
+  ['detail', 'Fine detail', 'Follow small edges and facial features.'],
+  ['depth', '3D depth', 'Spread the strands into a sculptural volume.'],
+  ['flow', 'Stroke looseness', 'Length and curvature of individual strands.'],
+  ['fringe', 'Loose threads', 'Long expressive lines around the subject.'],
+  ['color', 'Original color', 'Blend between graphite and the image colors.'],
+  ['threshold', 'White removal', 'Omit bright areas to leave open white space.'],
+];
 
-  useEffect(() => {
-    if (!mountRef.current) return undefined;
+export default function App() {
+  const demo = useMemo(() => ({ id: 'demo', source: makeDemoImage(), name: 'Studio portrait' }), []);
+  const [images, setImages] = useState([demo]);
+  const [activeId, setActiveId] = useState('demo');
+  const active = images.find(image => image.id === activeId) || demo;
+  const [layout, setLayout] = useState('together');
+  const singleId = layout === 'single' ? activeId : null;
+  const visibleImages = useMemo(() => layout === 'single'
+    ? [images.find(image => image.id === singleId) || demo]
+    : images.length > 1 ? images.filter(image => image.id !== 'demo') : [demo], [images, layout, singleId, demo]);
+  const [settings, setSettings] = useState({ ...DEFAULT_SETTINGS });
+  const [scribble, setScribble] = useState(null);
+  const [processing, setProcessing] = useState(true);
+  const [error, setError] = useState('');
+  const [renderError, setRenderError] = useState('');
+  const [autoRotate, setAutoRotate] = useState(false);
+  const [selectedView, setSelectedView] = useState('front');
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [videoOpen, setVideoOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [processingLabel, setProcessingLabel] = useState('Building strands…');
+  const viewport = useRef(null);
+  const fileInput = useRef(null);
+  const urls = useRef(new Set());
+  const pixelCache = useRef(new Map());
+  const geometryCache = useRef({ settings: null, items: new Map() });
+  const uploadVersion = useRef(0);
+  const pendingRevealTour = useRef(false);
+  const [uploading, setUploading] = useState(false);
+  const stage = useRef(null);
 
-    const mount = mountRef.current;
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#f7f4ef');
-    scene.fog = new THREE.Fog('#f7f4ef', 12, 28);
-
-    const camera = new THREE.PerspectiveCamera(44, mount.clientWidth / mount.clientHeight, 0.1, 100);
-    camera.position.set(0, 1.4, 13);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(mount.clientWidth, mount.clientHeight);
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    mount.appendChild(renderer.domElement);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.065;
-    controls.minDistance = 5;
-    controls.maxDistance = 24;
-    controls.autoRotate = settings.autoRotate;
-    controls.autoRotateSpeed = 0.8;
-
-    const ambient = new THREE.AmbientLight('#ffffff', 1.9);
-    const key = new THREE.DirectionalLight('#ffffff', 2.2);
-    key.position.set(4, 6, 8);
-    scene.add(ambient, key);
-
-    const grid = new THREE.GridHelper(12, 16, '#cabfb2', '#e6ddd2');
-    grid.position.y = -4.85;
-    grid.position.z = -0.75;
-    grid.material.transparent = true;
-    grid.material.opacity = 0.28;
-    scene.add(grid);
-
-    const plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(13, 9.2),
-      new THREE.MeshBasicMaterial({ color: '#fffdf8', transparent: true, opacity: 0.72 }),
-    );
-    plane.position.z = -0.28;
-    scene.add(plane);
-
-    sceneRef.current = scene;
-    rendererRef.current = renderer;
-    cameraRef.current = camera;
-    controlsRef.current = controls;
-
-    const resize = () => {
-      if (!mount.clientWidth || !mount.clientHeight) return;
-      camera.aspect = mount.clientWidth / mount.clientHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(mount.clientWidth, mount.clientHeight);
-    };
-
-    const animate = () => {
-      controls.update();
-      renderer.render(scene, camera);
-      frameRef.current = requestAnimationFrame(animate);
-    };
-
-    window.addEventListener('resize', resize);
-    animate();
-
-    return () => {
-      window.removeEventListener('resize', resize);
-      cancelAnimationFrame(frameRef.current);
-      controls.dispose();
-      renderer.dispose();
-      mount.removeChild(renderer.domElement);
-    };
+  useEffect(() => () => {
+    uploadVersion.current++;
+    urls.current.forEach(url => URL.revokeObjectURL(url));
   }, []);
 
   useEffect(() => {
-    if (!sceneRef.current || !scribble) return;
-
-    if (lineRef.current) {
-      sceneRef.current.remove(lineRef.current);
-      lineRef.current.geometry.dispose();
-      lineRef.current.material.dispose();
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(scribble.positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(scribble.colors, 3));
-    geometry.computeBoundingSphere();
-
-    const material = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.96,
-      linewidth: 1,
-    });
-
-    const lines = new THREE.LineSegments(geometry, material);
-    lines.rotation.x = -0.08;
-    sceneRef.current.add(lines);
-    lineRef.current = lines;
-  }, [scribble]);
-
-  useEffect(() => {
-    if (controlsRef.current) controlsRef.current.autoRotate = settings.autoRotate;
-    if (lineRef.current) lineRef.current.scale.z = settings.relief / 50;
-  }, [settings.autoRotate, settings.relief]);
-
-  return <div className="viewport" ref={mountRef} aria-label="Interactive 3D scribble preview" />;
-}
-
-function App() {
-  const demoImage = useMemo(makeDemoImage, []);
-  const [source, setSource] = useState(demoImage);
-  const [imageName, setImageName] = useState(EMPTY_IMAGE_NAME);
-  const [settings, setSettings] = useState({
-    density: 4,
-    threshold: 14,
-    depth: 38,
-    flow: 2,
-    layers: 6,
-    relief: 34,
-    color: 78,
-    detail: 72,
-    autoRotate: true,
-  });
-  const [scribble, setScribble] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(true);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
     let cancelled = false;
-    setIsProcessing(true);
-    setError('');
+    let worker;
+    setProcessing(true);
+    const timer = setTimeout(async () => {
+      try {
+        if (geometryCache.current.settings !== settings) geometryCache.current = { settings, items: new Map() };
+        const cache = geometryCache.current.items;
+        worker = new Worker(new URL('./scribble.worker.js', import.meta.url), { type: 'module' });
+        const items = [];
+        for (const [index, image] of visibleImages.entries()) {
+          if (cancelled) return;
+          setProcessingLabel(`Building drawing ${index + 1} of ${visibleImages.length}…`);
+          let result = cache.get(image.id);
+          if (!result) {
+            let pixels = pixelCache.current.get(image.id);
+            if (!pixels) pixels = await loadPixels(image.source);
+            if (cancelled) return;
+            pixelCache.current.set(image.id, pixels);
+            result = await new Promise((resolve, reject) => {
+              worker.onmessage = ({ data }) => data.error ? reject(new Error(data.error)) : resolve(data);
+              worker.onerror = () => reject(new Error('The drawing could not be generated. Reduce strand density and try again.'));
+              worker.postMessage({ image: { data: pixels.data, width: pixels.width, height: pixels.height }, settings });
+            });
+            if (cancelled) return;
+            cache.set(image.id, result);
+          }
+          items.push({ ...result, id: image.id, name: image.name });
+        }
+        if (!cancelled) {
+          setScribble({ items, strokes: items.reduce((sum, item) => sum + item.strokes, 0) });
+          setProcessing(false);
+          if (pendingRevealTour.current && items.length > 1) {
+            setAutoRotate(true);
+            setSelectedView('custom');
+          }
+          pendingRevealTour.current = false;
+        }
+      } catch (err) {
+        if (!cancelled) { setError(err.message); setProcessing(false); }
+      } finally { worker?.terminate(); }
+    }, 140);
+    return () => { cancelled = true; clearTimeout(timer); worker?.terminate(); };
+  }, [visibleImages, settings]);
 
-    processImage(source, settings)
-      .then((result) => {
-        if (!cancelled) setScribble(result);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err.message);
-      })
-      .finally(() => {
-        if (!cancelled) setIsProcessing(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    source,
-    settings.density,
-    settings.threshold,
-    settings.depth,
-    settings.flow,
-    settings.layers,
-    settings.color,
-    settings.detail,
-  ]);
-
-  const updateSetting = (key, value) => {
-    setSettings((current) => ({ ...current, [key]: value }));
+  const selectView = id => {
+    setSelectedView(id);
+    setAutoRotate(false);
+    setShowOriginal(false);
+    viewport.current?.view(id);
   };
-
-  const handleFile = (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith('image/')) {
-      setError('Please upload an image file.');
+  const selectImage = id => {
+    setActiveId(id);
+    setAutoRotate(false);
+    setShowOriginal(false);
+    if (layout === 'together' && visibleImages.some(image => image.id === id)) {
+      setSelectedView('custom');
+      viewport.current?.reveal(id);
+    } else {
+      setLayout('single');
+      selectView('front');
+    }
+  };
+  const addFiles = async files => {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    const version = ++uploadVersion.current;
+    setUploading(true);
+    setError('');
+    const accepted = [], failures = [];
+    for (const file of list) {
+      if (!file.type.startsWith('image/')) { failures.push(`${file.name}: choose an image file.`); continue; }
+      if (file.size > 30 * 1024 * 1024) { failures.push(`${file.name}: keep images under 30 MB.`); continue; }
+      const source = URL.createObjectURL(file);
+      try {
+        await loadPixels(source);
+        if (version !== uploadVersion.current) { URL.revokeObjectURL(source); break; }
+        urls.current.add(source);
+        accepted.push({ id: crypto.randomUUID(), source, name: file.name });
+      } catch { URL.revokeObjectURL(source); failures.push(`${file.name}: unsupported or damaged image.`); }
+    }
+    if (version !== uploadVersion.current) {
+      accepted.forEach(item => { URL.revokeObjectURL(item.source); urls.current.delete(item.source); });
       return;
     }
-
-    setImageName(file.name);
-    setSource(URL.createObjectURL(file));
+    if (accepted.length) { pendingRevealTour.current = true; setImages(current => [...current, ...accepted]); setActiveId(accepted[0].id); setLayout('together'); selectView('front'); }
+    setUploading(false);
+    if (failures.length) setError(failures.join(' '));
   };
-
-  const exportSnapshot = () => {
-    const canvas = document.querySelector('.viewport canvas');
-    if (!canvas) return;
-    const link = document.createElement('a');
-    link.download = '3d-scribble-art.png';
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+  const removeImage = image => {
+    if (image.id === activeId) { setActiveId(images.find(item => item.id !== image.id && item.id !== 'demo')?.id || 'demo'); selectView('front'); }
+    setImages(current => current.filter(item => item.id !== image.id));
+    pixelCache.current.delete(image.id);
+    geometryCache.current.items.delete(image.id);
+    URL.revokeObjectURL(image.source);
+    urls.current.delete(image.source);
   };
-
-  const resetDemo = () => {
-    setSource(demoImage);
-    setImageName(EMPTY_IMAGE_NAME);
+  const exportSnapshot = async () => {
+    try {
+      const blob = await viewport.current?.snapshot();
+      if (!blob) return;
+      const source = URL.createObjectURL(blob);
+      urls.current.add(source);
+      const link = document.createElement('a');
+      link.download = `${visibleImages.length > 1 ? 'collection' : active.name.replace(/\.[^.]+$/, '')}-3d-scribble.png`;
+      link.href = source;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => { URL.revokeObjectURL(source); urls.current.delete(source); }, 60000);
+    } catch { setError('Could not export this view. Please try again.'); }
+  };
+  const fullscreen = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await stage.current.requestFullscreen();
+    } catch { setError('Fullscreen is not available in this browser.'); }
+  };
+  const cycleView = direction => {
+    if (layout === 'together' && visibleImages.length > 1) {
+      const index = Math.max(0, visibleImages.findIndex(image => image.id === activeId));
+      selectImage(visibleImages[(index + direction + visibleImages.length) % visibleImages.length].id);
+      return;
+    }
+    const index = VIEWS.findIndex(view => view.id === selectedView);
+    selectView(VIEWS[(Math.max(0, index) + direction + VIEWS.length) % VIEWS.length].id);
   };
 
   return (
-    <main className="app-shell">
-      <section className="workspace" aria-label="3D scribble converter">
-        <aside className="control-panel">
-          <div className="brand-row">
-            <div className="brand-mark">
-              <Waves size={22} aria-hidden="true" />
-            </div>
-            <div>
-              <h1>3D Scribble Art</h1>
-              <p>Image to navigable relief drawing</p>
-            </div>
-          </div>
-
-          <label className="upload-zone">
-            <ImagePlus size={22} aria-hidden="true" />
-            <span>{imageName}</span>
-            <input type="file" accept="image/*" onChange={handleFile} />
-          </label>
-
-          <div className="button-row">
-            <button type="button" onClick={resetDemo} title="Restore demo image">
-              <RefreshCcw size={17} aria-hidden="true" />
-              Demo
-            </button>
-            <button type="button" onClick={exportSnapshot} title="Download current view">
-              <Download size={17} aria-hidden="true" />
-              PNG
-            </button>
-          </div>
-
-          <div className="toggle-row">
-            <Camera size={18} aria-hidden="true" />
-            <span>Auto orbit</span>
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={settings.autoRotate}
-                onChange={(event) => updateSetting('autoRotate', event.target.checked)}
-              />
-              <span />
-            </label>
-          </div>
-
-          <div className="sliders">
-            <Slider
-              icon={<Layers size={18} aria-hidden="true" />}
-              label="Line density"
-              min="3"
-              max="10"
-              value={settings.density}
-              onChange={(value) => updateSetting('density', Number(value))}
-              flipped
-            />
-            <Slider
-              icon={<Sparkles size={18} aria-hidden="true" />}
-              label="Ink threshold"
-              min="8"
-              max="58"
-              value={settings.threshold}
-              onChange={(value) => updateSetting('threshold', Number(value))}
-            />
-            <Slider
-              icon={<Palette size={18} aria-hidden="true" />}
-              label="Color strength"
-              min="0"
-              max="100"
-              value={settings.color}
-              onChange={(value) => updateSetting('color', Number(value))}
-            />
-            <Slider
-              icon={<Sparkles size={18} aria-hidden="true" />}
-              label="Fine detail"
-              min="0"
-              max="100"
-              value={settings.detail}
-              onChange={(value) => updateSetting('detail', Number(value))}
-            />
-            <Slider
-              icon={<Box size={18} aria-hidden="true" />}
-              label="Depth"
-              min="20"
-              max="95"
-              value={settings.depth}
-              onChange={(value) => updateSetting('depth', Number(value))}
-            />
-            <Slider
-              icon={<Waves size={18} aria-hidden="true" />}
-              label="Stroke looseness"
-              min="0"
-              max="9"
-              value={settings.flow}
-              onChange={(value) => updateSetting('flow', Number(value))}
-            />
-            <Slider
-              icon={<Layers size={18} aria-hidden="true" />}
-              label="Layer count"
-              min="1"
-              max="7"
-              value={settings.layers}
-              onChange={(value) => updateSetting('layers', Number(value))}
-            />
-          </div>
+    <main className="app-shell" onDragOver={event => { event.preventDefault(); if (!videoOpen && event.dataTransfer.types.includes('Files')) setDragging(true); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false); }} onDrop={event => { event.preventDefault(); setDragging(false); if (!videoOpen) addFiles(event.dataTransfer.files); }}>
+      <header className="app-header">
+        <div className="brand"><span className="brand-mark"><Waves size={22} /></span><div><h1>3D Scribble<span> Studio</span></h1><p>Images, reimagined in threads.</p></div></div>
+        <div className="header-actions"><span className="local-note"><span /> On your device</span><button className="mobile-settings icon-button" aria-label="Toggle controls" aria-expanded={panelOpen} onClick={() => setPanelOpen(open => !open)}><SlidersHorizontal size={18} /></button><button className="png-button" onClick={exportSnapshot} disabled={!scribble || processing || recording || !!renderError}><ArrowDownToLine size={16} /><span>PNG</span></button><button className="export-button" onClick={() => { setShowOriginal(false); setAutoRotate(false); setPanelOpen(false); setVideoOpen(true); }} disabled={!scribble || processing || uploading || !!renderError}><Play size={15} /><span>Export video</span></button></div>
+      </header>
+      <div className="workspace">
+        <aside className={`control-panel ${panelOpen ? 'is-open' : ''}`}>
+          <div className="section-heading"><span>01 / SOURCE IMAGE</span><button className="text-button" onClick={() => fileInput.current.click()}>Add <Plus size={13} /></button></div>
+          <button className="source-preview" onClick={() => fileInput.current.click()} aria-label="Upload images"><img src={active.source} alt={active.name} /><span><ImagePlus size={15} /> {uploading ? 'Opening images…' : 'Add your images'}</span></button>
+          <div className="source-name" title={active.name}>{active.name}</div>
+          <input ref={fileInput} className="file-input" type="file" accept="image/*" multiple aria-label="Choose images" onChange={event => { addFiles(event.target.files); event.target.value = ''; }} />
+          <p className="source-hint">Drop images anywhere. Portraits on light backgrounds work especially well.</p>
+          <div className="panel-divider" />
+          <div className="section-heading"><span>02 / THREAD STYLE</span><button className="text-button" onClick={() => { setError(''); setSettings({ ...DEFAULT_SETTINGS }); }} title="Reset style"><RotateCcw size={13} /> Reset</button></div>
+          <div className="preset-row"><button className={settings.fringe === 50 && settings.flow === 45 ? 'selected' : ''} onClick={() => setSettings({ ...DEFAULT_SETTINGS })}>Expressive</button><button className={settings.fringe === 15 && settings.flow === 18 ? 'selected' : ''} onClick={() => setSettings({ ...DEFAULT_SETTINGS, density: 90, detail: 100, flow: 18, fringe: 15 })}>Fine ink</button><button className={settings.color === 0 ? 'selected' : ''} onClick={() => setSettings({ ...DEFAULT_SETTINGS, color: 0, flow: 65, fringe: 65 })}>Graphite</button></div>
+          <div className="sliders">{CONTROL_FIELDS.map(([key, label, hint]) => <label className="slider-row" key={key} title={hint}><span><span>{label}</span><output>{settings[key]}<small>%</small></output></span><input aria-label={label} type="range" min={key === 'density' ? 10 : 0} max={key === 'threshold' ? 60 : 100} value={settings[key]} onChange={event => setSettings(current => ({ ...current, [key]: Number(event.target.value) }))} /></label>)}</div>
+          <div className="panel-footer"><Box size={17} /><p>Real 3D strands. Drag the artwork to discover another angle.</p></div>
         </aside>
-
-        <section className="stage">
-          <ScribbleViewport scribble={scribble} settings={settings} />
-          <div className="stage-toolbar" aria-live="polite">
-            <span>{isProcessing ? 'Converting image...' : `${scribble?.segments ?? 0} scribble strokes`}</span>
-            <span>Drag to rotate - Scroll to zoom</span>
-          </div>
-          {error && <div className="error-banner">{error}</div>}
+        <section className="gallery">
+          <div className="collection-controls"><div role="group" aria-label="Artwork mode"><button aria-pressed={layout === 'together'} className={layout === 'together' ? 'active' : ''} onClick={() => { setLayout('together'); selectView('front'); }}>3D reveal ({images.length > 1 ? images.length - 1 : 1})</button><button aria-pressed={layout === 'single'} className={layout === 'single' ? 'active' : ''} onClick={() => { setLayout('single'); selectView('front'); }}>Single image</button></div><span>{visibleImages.length > 1 ? 'One artwork · Different images from different angles' : layout === 'single' ? 'Inspect the selected image' : 'Add images to reveal them as you rotate'}</span></div>
+          <section className={`stage ${showOriginal ? 'show-original' : ''}`} ref={stage} aria-label="Interactive artwork">
+            <ScribbleViewport ref={viewport} scribble={scribble} autoRotate={autoRotate && !showOriginal} onInteract={() => { setAutoRotate(false); setSelectedView('custom'); }} onError={setRenderError} onRevealChange={id => { if (id && layout === 'together' && !processing) setActiveId(id); }} />
+            {showOriginal && <div className="original-overlay"><img src={active.source} alt={`Original: ${active.name}`} /></div>}
+            <div className="stage-top"><div className="canvas-label"><span className={`status-dot ${processing ? 'busy' : ''}`} />{processing ? 'Weaving your drawing' : showOriginal ? 'Original image' : '3D thread drawing'}</div><div className="canvas-actions"><button aria-pressed={showOriginal} className={showOriginal ? 'active' : ''} onClick={() => setShowOriginal(value => !value)}>{showOriginal ? <Check size={14} /> : <ImagePlus size={14} />} Original</button><button className="icon-button" onClick={fullscreen} aria-label="Toggle fullscreen"><Maximize size={16} /></button></div></div>
+            {processing && <div className="processing-indicator" role="status"><span className="spinner" /> {processingLabel}</div>}
+            {(error || renderError) && <div className="error-banner" role="alert">{renderError || error}<button aria-label="Dismiss error" onClick={() => { setError(''); setRenderError(''); }}><X size={16} /></button></div>}
+            {!processing && scribble?.strokes === 0 && <div className="empty-message">No visible strands. Lower white removal or choose an image with more contrast.</div>}
+            <div className="view-navigation"><button className="icon-button" aria-label="Previous view" onClick={() => cycleView(-1)}><ChevronLeft size={19} /></button><div><span>{showOriginal ? 'SOURCE' : visibleImages.length > 1 ? `REVEAL ${Math.max(0, visibleImages.findIndex(image => image.id === activeId)) + 1} / ${visibleImages.length}` : selectedView === 'custom' ? 'FREE ORBIT' : VIEWS.find(view => view.id === selectedView)?.label.toUpperCase()}</span><small>{showOriginal ? 'Your uploaded image' : visibleImages.length > 1 ? 'Rotate to reveal · Click a thumbnail to turn to its image' : 'Drag to orbit · Scroll to zoom · Right-drag to pan'}</small></div><button className="icon-button" aria-label="Next view" onClick={() => cycleView(1)}><ChevronRight size={19} /></button></div>
+            <div className="zoom-controls"><button className="icon-button" aria-label="Zoom out" onClick={() => viewport.current?.zoom(1 / 1.25)}><Minus size={17} /></button><button className="icon-button" aria-label="Reset camera" onClick={() => selectView('front')}><RotateCcw size={15} /></button><button className="icon-button" aria-label="Zoom in" onClick={() => viewport.current?.zoom(1.25)}><Plus size={17} /></button></div>
+          </section>
+          <div className="view-bar"><div className="view-tabs" aria-label="Camera views">{VIEWS.map(view => <button key={view.id} aria-pressed={!showOriginal && selectedView === view.id} className={!showOriginal && selectedView === view.id ? 'active' : ''} onClick={() => selectView(view.id)}>{view.label}</button>)}</div><button className={`tour-button ${autoRotate ? 'active' : ''}`} aria-pressed={autoRotate} onClick={() => { setShowOriginal(false); setAutoRotate(value => !value); setSelectedView('custom'); }}>{autoRotate ? <Pause size={14} /> : <Play size={14} />}{autoRotate ? 'Pause tour' : 'Play tour'}</button></div>
+          <div className="filmstrip"><div className="filmstrip-title"><span>YOUR COLLECTION</span><small>{images.length.toString().padStart(2, '0')} images</small></div><div className="thumbnails">{images.map((image, index) => <div className={`thumbnail-wrap ${image.id === active.id ? 'selected' : ''}`} key={image.id}><button className="thumbnail" aria-label={`Open ${image.name}`} aria-pressed={image.id === active.id} onClick={() => selectImage(image.id)}><img src={image.source} alt={image.name} /><span>{(index + 1).toString().padStart(2, '0')}</span></button>{image.id !== 'demo' && <button className="remove-image" aria-label={`Remove ${image.name}`} onClick={() => removeImage(image)}><X size={11} /></button>}</div>)}<button className="add-image" onClick={() => fileInput.current.click()} aria-label="Add images to collection"><Plus size={21} /></button></div><div className="art-stats"><span>{processing ? 'Generating…' : `${(scribble?.strokes || 0).toLocaleString()} strands`}</span><small>Made of lines. Made to explore.</small></div></div>
         </section>
-      </section>
+      </div>
+      {dragging && <div className="drop-overlay"><ImagePlus size={36} /><strong>Drop your images here</strong><span>Create a collection of 3D thread drawings</span></div>}
+      {videoOpen && <VideoExportDialog viewport={viewport} collectionCount={visibleImages.length} onClose={() => setVideoOpen(false)} onRecordingChange={setRecording} />}
     </main>
   );
 }
-
-function Slider({ icon, label, min, max, value, onChange, flipped = false }) {
-  const displayValue = flipped ? Number(max) + Number(min) - value : value;
-
-  return (
-    <label className="slider-row">
-      <span className="slider-heading">
-        {icon}
-        <span>{label}</span>
-        <strong>{displayValue}</strong>
-      </span>
-      <input min={min} max={max} value={value} type="range" onChange={(event) => onChange(event.target.value)} />
-    </label>
-  );
-}
-
-export default App;

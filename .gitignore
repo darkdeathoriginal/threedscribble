@@ -5,3 +5,5 @@ mobile-screenshot.png
 .env
 .env.*
 npm-debug.log*
+reference-*.png
+verification/
